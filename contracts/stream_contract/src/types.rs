@@ -144,6 +144,17 @@ pub struct Stream {
     pub is_allowance_based: bool,
 }
 
+/// Input for atomic batch stream creation.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BatchStreamInput {
+    pub recipient: Address,
+    pub token_address: Address,
+    pub amount: i128,
+    pub duration: u64,
+    pub cliff_duration: Option<u64>,
+}
+
 /// Protocol-wide configuration, fee circuit breaker and guardian role.
 ///
 /// Stored as a singleton in instance storage under `DataKey::ProtocolConfig`.

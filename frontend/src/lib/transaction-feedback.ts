@@ -47,7 +47,7 @@ export function transactionSuccessToast(
   options?: ToastOptions
 ): string {
   playTransactionSuccessSound();
-  return toast.success(message, options);
+  return options ? toast.success(message, options) : toast.success(message);
 }
 
 export { SOUND_STORAGE_KEY };

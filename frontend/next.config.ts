@@ -1,4 +1,5 @@
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
@@ -6,7 +7,7 @@ const nextConfig: NextConfig = {
   // prevents Turbopack from inferring a wrong root when stray package-lock
   // files exist outside the repo (e.g. ~/package-lock.json).
   turbopack: {
-    root: path.join(path.dirname(new URL(import.meta.url).pathname), ".."),
+    root: path.join(path.dirname(fileURLToPath(import.meta.url)), ".."),
   },
   // Enable tree-shaking for icon/utility libraries to reduce per-route
   // bundle sizes (Issue #1254).

@@ -18,6 +18,7 @@ import Link from "next/link";
 import { ArrowLeft, FileText, X } from "lucide-react";
 import { useWallet } from "@/context/wallet-context";
 import { useStreamForm } from "@/hooks/useStreamForm";
+import { validateRecipient } from "@/lib/stream-validation";
 
 const TOKEN_DECIMALS = 7;
 
@@ -54,13 +55,11 @@ export default function CreateStreamContent() {
     const recipientParam = searchParams.get("recipient");
     if (!recipientParam || hasDraft) return;
 
-    import("@stellar/stellar-sdk").then(({ StrKey }) => {
-      if (StrKey.isValidEd25519PublicKey(recipientParam)) {
-        updateFormData({ recipient: recipientParam });
-      } else {
-        logger.warn("Ignoring malformed recipient query param", { recipientParam });
-      }
-    });
+    if (validateRecipient(recipientParam) === null) {
+      updateFormData({ recipient: recipientParam });
+    } else {
+      logger.warn("Ignoring malformed recipient query param", { recipientParam });
+    }
   }, [searchParams, hasDraft, updateFormData]);
 
   const handleSubmit = async (e: React.FormEvent) => {

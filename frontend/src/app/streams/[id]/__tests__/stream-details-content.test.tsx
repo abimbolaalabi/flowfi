@@ -70,6 +70,22 @@ vi.mock("@/hooks/useStreamingAmount", () => ({
   useStreamingAmount: mockUseStreamingAmount,
 }));
 
+// Token pricing performs its own network fetch; stub the hook so the test's
+// `fetch` mock queue only serves the stream + events requests.
+vi.mock("@/hooks/useTokenPrice", () => ({
+  useTokenPrice: () => ({
+    data: {
+      tokenSymbol: "XLM",
+      priceUSD: 0.12,
+      priceEUR: 0.11,
+      priceGBP: 0.09,
+      timestamp: 0,
+    },
+  }),
+  convertToFiat: () => 0,
+  formatFiatAmount: (value: number) => `$${value.toFixed(2)}`,
+}));
+
 vi.mock("@/lib/soroban", () => mockSoroban);
 
 vi.mock("@/components/stream-creation/CancelConfirmModal", () => ({
@@ -98,8 +114,21 @@ vi.mock("@/components/TransactionTracker", () => ({
 }));
 
 import StreamDetailsContent from "../stream-details-content";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 const STREAM_ID = "42";
+
+// StreamDetailsContent reads token prices through react-query, so every render
+// needs a client in scope.
+const queryClient = new QueryClient({
+  defaultOptions: { queries: { retry: false } },
+});
+
+function renderWithProviders(ui: React.ReactElement) {
+  return render(
+    <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>
+  );
+}
 
 function createMockStream() {
   return {
@@ -124,7 +153,9 @@ function createMockStream() {
 describe("StreamDetailsContent loading skeleton", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    global.fetch = vi.fn();
+    global.fetch = vi.fn(() =>
+      Promise.resolve({ ok: false, json: async () => ({}) } as Response)
+    );
     origUseWallet.mockReturnValue({
       session: mockSession,
       isHydrated: true,
@@ -137,7 +168,7 @@ describe("StreamDetailsContent loading skeleton", () => {
       () => new Promise(() => {}) // never resolves
     );
 
-    render(<StreamDetailsContent streamId={STREAM_ID} />);
+    renderWithProviders(<StreamDetailsContent streamId={STREAM_ID} />);
 
     // Should show skeleton elements, not a simple spinner
     const skeletonRegion = screen.getByRole("status");
@@ -162,7 +193,7 @@ describe("StreamDetailsContent loading skeleton", () => {
         json: async () => ({ events: [], total: 0 }),
       } as Response);
 
-    render(<StreamDetailsContent streamId={STREAM_ID} />);
+    renderWithProviders(<StreamDetailsContent streamId={STREAM_ID} />);
 
     // Initially shows skeleton
     expect(screen.getByRole("status")).toBeInTheDocument();
@@ -176,7 +207,7 @@ describe("StreamDetailsContent loading skeleton", () => {
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
 
     // Stream-specific content should be visible
-    expect(screen.getByText(/stream #42/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/stream #42/i).length).toBeGreaterThan(0);
   });
 
   it("transitions from skeleton to not-found state when stream is confirmed missing", async () => {
@@ -186,7 +217,7 @@ describe("StreamDetailsContent loading skeleton", () => {
       json: async () => ({ error: "Stream not found" }),
     } as Response);
 
-    render(<StreamDetailsContent streamId={STREAM_ID} />);
+    renderWithProviders(<StreamDetailsContent streamId={STREAM_ID} />);
 
     // Initially shows skeleton
     expect(screen.getByRole("status")).toBeInTheDocument();
@@ -210,7 +241,7 @@ describe("StreamDetailsContent loading skeleton", () => {
       json: async () => ({ error: "Stream not found" }),
     } as Response);
 
-    render(<StreamDetailsContent streamId={STREAM_ID} />);
+    renderWithProviders(<StreamDetailsContent streamId={STREAM_ID} />);
 
     await waitFor(() => {
       expect(screen.getByText(/stream not found/i)).toBeInTheDocument();
@@ -233,7 +264,7 @@ describe("StreamDetailsContent loading skeleton", () => {
         json: async () => ({ events: [], total: 0 }),
       } as Response);
 
-    render(<StreamDetailsContent streamId={STREAM_ID} />);
+    renderWithProviders(<StreamDetailsContent streamId={STREAM_ID} />);
 
     // Once the stream loads, the Claimable stat card should show the value
     // returned by the shared hook, formatted in token units (stroops → XLM).
@@ -261,7 +292,7 @@ async function renderLoaded(streamOverrides: Record<string, unknown> = {}) {
     } as Response);
 
   const user = userEvent.setup();
-  render(<StreamDetailsContent streamId={STREAM_ID} />);
+  renderWithProviders(<StreamDetailsContent streamId={STREAM_ID} />);
 
   await waitFor(() => {
     expect(screen.getByText(/stream details/i)).toBeInTheDocument();
@@ -293,7 +324,9 @@ describe("StreamDetailsContent handleWithdraw", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockTracker.status = "idle";
-    global.fetch = vi.fn();
+    global.fetch = vi.fn(() =>
+      Promise.resolve({ ok: false, json: async () => ({}) } as Response)
+    );
     mockWalletForRecipient();
   });
 
@@ -342,7 +375,9 @@ describe("StreamDetailsContent handleTopUp", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockTracker.status = "idle";
-    global.fetch = vi.fn();
+    global.fetch = vi.fn(() =>
+      Promise.resolve({ ok: false, json: async () => ({}) } as Response)
+    );
     // TopUp is only visible for the sender
     origUseWallet.mockReturnValue({
       session: mockSession,
@@ -400,7 +435,7 @@ describe("StreamDetailsContent handleTopUp", () => {
     const addFundsBtn = screen.getByRole("button", { name: /add funds/i });
     await user.click(addFundsBtn);
 
-    expect(mockToast.error).toHaveBeenCalledWith("Please enter a valid amount");
+    expect(mockToast.error).toHaveBeenCalledWith("Amount is required");
     expect(mockSoroban.topUpStream).not.toHaveBeenCalled();
   });
 });
@@ -411,7 +446,9 @@ describe("StreamDetailsContent handlePause", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockTracker.status = "idle";
-    global.fetch = vi.fn();
+    global.fetch = vi.fn(() =>
+      Promise.resolve({ ok: false, json: async () => ({}) } as Response)
+    );
     origUseWallet.mockReturnValue({
       session: mockSession,
       isHydrated: true,
@@ -453,7 +490,9 @@ describe("StreamDetailsContent handleResume", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockTracker.status = "idle";
-    global.fetch = vi.fn();
+    global.fetch = vi.fn(() =>
+      Promise.resolve({ ok: false, json: async () => ({}) } as Response)
+    );
     origUseWallet.mockReturnValue({
       session: mockSession,
       isHydrated: true,
@@ -495,7 +534,9 @@ describe("StreamDetailsContent handleCancel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockTracker.status = "idle";
-    global.fetch = vi.fn();
+    global.fetch = vi.fn(() =>
+      Promise.resolve({ ok: false, json: async () => ({}) } as Response)
+    );
     origUseWallet.mockReturnValue({
       session: mockSession,
       isHydrated: true,
@@ -542,7 +583,9 @@ describe("StreamDetailsContent live-claimable interval", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockTracker.status = "idle";
-    global.fetch = vi.fn();
+    global.fetch = vi.fn(() =>
+      Promise.resolve({ ok: false, json: async () => ({}) } as Response)
+    );
   });
 
   it("shows live claimable indicator with a pulsing dot", async () => {

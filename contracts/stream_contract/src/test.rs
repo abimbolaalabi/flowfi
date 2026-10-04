@@ -18,8 +18,8 @@ use events::{
     StreamResumedEvent, StreamToppedUpEvent, TokensWithdrawnEvent,
 };
 use types::{
-    DataKey, LegacyProtocolConfig, LegacyStream, ProtocolConfig, Stream, StreamStatus,
-    VestingSchedule, VestingStep, MAX_BATCH_WITHDRAW, MAX_VESTING_STEPS,
+    DataKey, DisputeStatus, LegacyProtocolConfig, LegacyStream, ProtocolConfig, Stream,
+    StreamStatus, VestingSchedule, VestingStep, MAX_BATCH_WITHDRAW, MAX_VESTING_STEPS,
 };
 
 /// Minimal fee-token double that reads the stream from inside the treasury
@@ -41,13 +41,19 @@ impl ReentrantFeeToken {
                 .instance()
                 .get(&Symbol::new(&env, "stream_contract"))
                 .unwrap();
-            let stream = StreamContractClient::new(&env, &stream_contract)
-                .get_stream(&1)
-                .unwrap();
-            env.storage().instance().set(
-                &Symbol::new(&env, "observed_deposit"),
-                &stream.deposited_amount,
-            );
+            // Inspect the already-committed record by switching the storage
+            // context. A cross-contract `get_stream` call would re-enter the
+            // still-running stream contract and be rejected by the host before
+            // it could observe anything.
+            let observed_deposit = env.as_contract(&stream_contract, || {
+                let raw: Val = env.storage().persistent().get(&DataKey::Stream(1)).unwrap();
+                Stream::try_from_val(&env, &raw)
+                    .expect("persisted stream is current shape")
+                    .deposited_amount
+            });
+            env.storage()
+                .instance()
+                .set(&Symbol::new(&env, "observed_deposit"), &observed_deposit);
         }
     }
 }
@@ -166,6 +172,9 @@ fn test_datakey_stream_serializes_deterministically() {
         paused_at: None,
         status: StreamStatus::Active,
         schedule: VestingSchedule::Linear,
+        arbiter: None,
+        dispute_status: DisputeStatus::None,
+        is_allowance_based: false,
     };
     env.as_contract(&contract_id, || {
         env.storage().persistent().set(&key, &stream);
@@ -2360,6 +2369,9 @@ fn test_fuzz_claimable_overflow_and_cancel_invariants() {
                 None
             },
             schedule: VestingSchedule::Linear,
+            arbiter: None,
+            dispute_status: DisputeStatus::None,
+            is_allowance_based: false,
             status: if paused {
                 StreamStatus::Paused
             } else {
@@ -4575,8 +4587,9 @@ fn raw_stream_field_count(env: &Env, contract: &Address, stream_id: u64) -> u32 
 
 /// True when the raw record at `stream_id` decodes as the current [`Stream`].
 fn stream_record_is_current_shape(env: &Env, contract: &Address, stream_id: u64) -> bool {
-    // `Stream` carries the `schedule` field; `LegacyStream` does not.
-    raw_stream_field_count(env, contract, stream_id) == 13
+    // `Stream` carries the `schedule`, `cliff_time`, and dispute/allowance
+    // fields; `LegacyStream` does not.
+    raw_stream_field_count(env, contract, stream_id) == 17
 }
 
 /// True when the raw record at `stream_id` decodes as the pre-v2 [`LegacyStream`].

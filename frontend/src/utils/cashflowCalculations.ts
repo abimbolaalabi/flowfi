@@ -26,8 +26,12 @@ export function projectCashflow(streams: ProjectionStream[], horizonDays: number
       const amount = stream.ratePerSecond * 86400;
       return total + (stream.direction === "incoming" ? amount : -amount);
     }, 0);
-    cumulative += Math.max(0, day);
-    balance = Math.max(0, balance + Math.min(0, day));
+    // The first point represents "now" and accrues nothing; later points each
+    // advance the projection by one full day.
+    if (index > 0) {
+      cumulative += Math.max(0, day);
+      balance = Math.max(0, balance + Math.min(0, day));
+    }
     return { date, actual: index === 0 ? cumulative : 0, projected: cumulative, balance, dailyRate: day };
   });
 }
