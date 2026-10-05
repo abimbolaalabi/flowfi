@@ -34,14 +34,12 @@ mod storage;
 mod types;
 
 #[cfg(test)]
-mod acceptance_tests;
-#[cfg(test)]
 mod property_tests;
 #[cfg(test)]
 mod test;
 
 use soroban_sdk::{
-    contract, contractimpl, token, vec, Address, BytesN, Env, IntoVal, InvokeError, Symbol, Vec,
+    contract, contractimpl, token, vec, Address, BytesN, Env, InvokeError, Symbol, Vec,
 };
 
 use errors::StreamError;
@@ -49,10 +47,10 @@ use events::{
     AdminTransferredEvent, AllowanceStreamCreatedEvent, ContractUpgradedEvent,
     DisputeRequestedEvent, DisputeResolvedEvent, EmergencyGuardianUpdatedEvent, FeeCollectedEvent,
     FeeConfigUpdatedEvent, HybridCliffStreamCreatedEvent, InitializedEvent,
-    ProtocolPauseStatusEvent, RecipientTransferredEvent, StateMigratedEvent,
-    StepVestingStreamCreatedEvent, StreamCancelledEvent, StreamClosedEvent, StreamCompletedEvent,
-    StreamCreatedEvent, StreamPausedEvent, StreamRateModifiedEvent, StreamResumedEvent,
-    StreamToppedUpEvent, TokensWithdrawnEvent,
+    ProtocolPauseStatusEvent, StateMigratedEvent, StepVestingStreamCreatedEvent,
+    StreamCancelledEvent, StreamClosedEvent, StreamCompletedEvent, StreamCreatedEvent,
+    StreamPausedEvent, StreamRateModifiedEvent, StreamResumedEvent, StreamToppedUpEvent,
+    TokensWithdrawnEvent,
 };
 use storage::{
     config_exists, get_contract_version, get_recorded_wasm_hash, load_config, load_stream,
@@ -60,8 +58,8 @@ use storage::{
     save_stream, try_load_config, try_load_stream,
 };
 use types::{
-    BatchStreamInput, DisputeStatus, ProtocolConfig, Stream, StreamStatus, VestingSchedule,
-    VestingStep, MAX_BATCH_WITHDRAW, MAX_VESTING_STEPS,
+    DisputeStatus, ProtocolConfig, Stream, StreamStatus, VestingSchedule, VestingStep,
+    MAX_BATCH_WITHDRAW, MAX_VESTING_STEPS,
 };
 
 /// Maximum allowed protocol fee: 1 000 bps = 10%.
@@ -621,7 +619,7 @@ impl StreamContract {
                 withdrawn_amount: 0,
                 start_time,
                 last_update_time: start_time,
-                cliff_time: None,
+                cliff_time: Some(cliff_time),
                 is_active: true,
                 paused: false,
                 paused_at: None,
@@ -650,266 +648,6 @@ impl StreamContract {
         );
 
         Ok(stream_id)
-    }
-
-    /// Create a linear stream that is fully blocked until an absolute cliff.
-    ///
-    /// Nothing is claimable before `start_time + cliff_duration`; once the
-    /// cliff passes, accrual is the ordinary linear `net_amount / duration`.
-    ///
-    /// # Errors
-    /// - `ProtocolPaused`      — the circuit breaker is engaged.
-    /// - `InvalidAmount`       — `amount` ≤ 0.
-    /// - `InvalidDuration`     — `duration` is 0, or `cliff_duration` is 0 or
-    ///   greater than `duration`.
-    /// - `InvalidRate`         — `net_amount / duration` rounds to zero.
-    /// - `InvalidTokenAddress` — `token_address` is not a token contract.
-    pub fn create_stream_with_cliff(
-        env: Env,
-        sender: Address,
-        recipient: Address,
-        token_address: Address,
-        amount: i128,
-        duration: u64,
-        cliff_duration: u64,
-    ) -> Result<u64, StreamError> {
-        sender.require_auth();
-        Self::require_not_protocol_paused(&env)?;
-
-        if amount <= 0 {
-            return Err(StreamError::InvalidAmount);
-        }
-        if duration == 0 || cliff_duration == 0 || cliff_duration > duration {
-            return Err(StreamError::InvalidDuration);
-        }
-        Self::validate_token_contract(&env, &token_address)?;
-
-        let stream_id = next_stream_id(&env);
-        let start_time = env.ledger().timestamp();
-        let contract_address = env.current_contract_address();
-
-        token::Client::new(&env, &token_address).transfer(&sender, &contract_address, &amount);
-        let (net_amount, fee_amount, treasury) = Self::collect_fee(&env, &token_address, amount)?;
-        let rate_per_second = net_amount / (duration as i128);
-        if rate_per_second == 0 {
-            return Err(StreamError::InvalidRate);
-        }
-
-        save_stream(
-            &env,
-            stream_id,
-            &Stream {
-                sender: sender.clone(),
-                recipient: recipient.clone(),
-                token_address: token_address.clone(),
-                rate_per_second,
-                deposited_amount: net_amount,
-                withdrawn_amount: 0,
-                start_time,
-                last_update_time: start_time,
-                cliff_time: Some(start_time.saturating_add(cliff_duration)),
-                is_active: true,
-                paused: false,
-                paused_at: None,
-                status: StreamStatus::Active,
-                schedule: VestingSchedule::Linear,
-                arbiter: None,
-                dispute_status: DisputeStatus::None,
-                is_allowance_based: false,
-            },
-        );
-
-        Self::transfer_fee(&env, &token_address, stream_id, fee_amount, treasury);
-
-        env.events().publish(
-            (Symbol::new(&env, "stream_created"), stream_id),
-            StreamCreatedEvent {
-                stream_id,
-                sender,
-                recipient,
-                rate_per_second,
-                token_address,
-                deposited_amount: net_amount,
-                start_time,
-            },
-        );
-
-        Ok(stream_id)
-    }
-
-    /// Create multiple streams in a single transaction.
-    ///
-    /// Every input is validated before any token transfer, so a malformed entry
-    /// aborts the whole batch and rolls back any transfer already made.
-    ///
-    /// # Errors
-    /// - `ProtocolPaused`      — the circuit breaker is engaged.
-    /// - `InvalidAmount`       — the batch is empty, larger than 50, or an
-    ///   entry has a non-positive amount.
-    /// - `InvalidDuration`     — an entry has a zero duration, or a cliff
-    ///   duration that is zero or exceeds the duration.
-    /// - `InvalidRate`         — an entry's `net_amount / duration` rounds to zero.
-    /// - `InvalidTokenAddress` — an entry's token is not a token contract.
-    pub fn batch_create_streams(
-        env: Env,
-        sender: Address,
-        streams: Vec<BatchStreamInput>,
-    ) -> Result<Vec<u64>, StreamError> {
-        sender.require_auth();
-        Self::require_not_protocol_paused(&env)?;
-
-        let count = streams.len();
-        if count == 0 || count > 50 {
-            return Err(StreamError::InvalidAmount);
-        }
-        for input in streams.iter() {
-            if input.amount <= 0 {
-                return Err(StreamError::InvalidAmount);
-            }
-            if input.duration == 0 {
-                return Err(StreamError::InvalidDuration);
-            }
-            if let Some(cliff_duration) = input.cliff_duration {
-                if cliff_duration == 0 || cliff_duration > input.duration {
-                    return Err(StreamError::InvalidDuration);
-                }
-            }
-            Self::validate_token_contract(&env, &input.token_address)?;
-        }
-
-        let contract_address = env.current_contract_address();
-        let mut ids: Vec<u64> = Vec::new(&env);
-        for input in streams.iter() {
-            let stream_id = next_stream_id(&env);
-            let start_time = env.ledger().timestamp();
-
-            token::Client::new(&env, &input.token_address).transfer(
-                &sender,
-                &contract_address,
-                &input.amount,
-            );
-            let (net_amount, fee_amount, treasury) =
-                Self::collect_fee(&env, &input.token_address, input.amount)?;
-            let rate_per_second = net_amount / (input.duration as i128);
-            if rate_per_second == 0 {
-                return Err(StreamError::InvalidRate);
-            }
-
-            save_stream(
-                &env,
-                stream_id,
-                &Stream {
-                    sender: sender.clone(),
-                    recipient: input.recipient.clone(),
-                    token_address: input.token_address.clone(),
-                    rate_per_second,
-                    deposited_amount: net_amount,
-                    withdrawn_amount: 0,
-                    start_time,
-                    last_update_time: start_time,
-                    cliff_time: input
-                        .cliff_duration
-                        .map(|duration| start_time.saturating_add(duration)),
-                    is_active: true,
-                    paused: false,
-                    paused_at: None,
-                    status: StreamStatus::Active,
-                    schedule: VestingSchedule::Linear,
-                    arbiter: None,
-                    dispute_status: DisputeStatus::None,
-                    is_allowance_based: false,
-                },
-            );
-
-            Self::transfer_fee(&env, &input.token_address, stream_id, fee_amount, treasury);
-
-            env.events().publish(
-                (Symbol::new(&env, "stream_created"), stream_id),
-                StreamCreatedEvent {
-                    stream_id,
-                    sender: sender.clone(),
-                    recipient: input.recipient.clone(),
-                    rate_per_second,
-                    token_address: input.token_address.clone(),
-                    deposited_amount: net_amount,
-                    start_time,
-                },
-            );
-
-            ids.push_back(stream_id);
-        }
-
-        Ok(ids)
-    }
-
-    /// Transfer stream ownership to a new recipient, settling accrued funds.
-    ///
-    /// The currently-vested balance is paid out to the old recipient and marked
-    /// withdrawn before ownership moves, so the new recipient can only ever
-    /// claim tokens that accrue after the transfer.
-    ///
-    /// # Errors
-    /// - `StreamNotFound` — no stream exists with `stream_id`.
-    /// - `Unauthorized`   — caller is not the current recipient, or the new
-    ///   recipient is the contract itself or the current recipient.
-    /// - `StreamInactive` — the stream is no longer active.
-    pub fn transfer_recipient(
-        env: Env,
-        current_recipient: Address,
-        stream_id: u64,
-        new_recipient: Address,
-    ) -> Result<(), StreamError> {
-        current_recipient.require_auth();
-
-        let mut stream = load_stream(&env, stream_id)?;
-        if stream.recipient != current_recipient {
-            return Err(StreamError::Unauthorized);
-        }
-        Self::validate_stream_active(&stream)?;
-
-        let contract_address = env.current_contract_address();
-        if new_recipient == current_recipient || new_recipient == contract_address {
-            return Err(StreamError::Unauthorized);
-        }
-
-        let now = env.ledger().timestamp();
-        let settled_amount = Self::calculate_claimable(&stream, now);
-        if settled_amount > 0 {
-            stream.withdrawn_amount = stream.withdrawn_amount.saturating_add(settled_amount);
-        }
-        stream.last_update_time = now;
-        stream.recipient = new_recipient.clone();
-        save_stream(&env, stream_id, &stream);
-
-        if settled_amount > 0 {
-            token::Client::new(&env, &stream.token_address).transfer(
-                &contract_address,
-                &current_recipient,
-                &settled_amount,
-            );
-        }
-
-        env.events().publish(
-            (Symbol::new(&env, "recipient_transferred"), stream_id),
-            RecipientTransferredEvent {
-                stream_id,
-                old_recipient: current_recipient,
-                new_recipient,
-                settled_amount,
-                timestamp: now,
-            },
-        );
-
-        Ok(())
-    }
-
-    /// Extend the persistent storage TTL of an existing stream.
-    ///
-    /// # Errors
-    /// - `StreamNotFound` — no stream exists with `stream_id`.
-    pub fn extend_stream_ttl(env: Env, stream_id: u64) -> Result<(), StreamError> {
-        let _stream = load_stream(&env, stream_id)?;
-        Ok(())
     }
 
     /// Structural validation for a step-tranche schedule.
@@ -1081,15 +819,6 @@ impl StreamContract {
         } else {
             now
         };
-
-        // An optional absolute cliff blocks all accrual until it is reached.
-        // Only linear streams populate `cliff_time`; step and hybrid schedules
-        // encode their own cliff inside `schedule`.
-        if let Some(cliff_time) = stream.cliff_time {
-            if effective_now < cliff_time {
-                return 0;
-            }
-        }
 
         // Clamp to 0: withdrawn_amount should never exceed deposited_amount in
         // normal flow, but guard defensively so the function never returns negative.
@@ -1954,18 +1683,11 @@ impl StreamContract {
         let start_time = env.ledger().timestamp();
 
         // Check allowance: just verify it's callable, don't lock it yet
-        // Try to get allowance to validate approval was made
-        match env.try_invoke_contract::<i128, soroban_sdk::InvokeError>(
-            &token_address,
-            &Symbol::new(&env, "allowance"),
-            vec![
-                &env,
-                sender.clone().into_val(&env),
-                env.current_contract_address().into_val(&env),
-            ],
-        ) {
-            Ok(Ok(allowance)) if allowance > 0 => {}
-            _ => return Err(StreamError::AllowanceLocked),
+        let token_client = token::Client::new(&env, &token_address);
+        // Use the generated client: avoids manual Val conversion for try_invoke.
+        let allowance = token_client.allowance(&sender, &env.current_contract_address());
+        if allowance <= 0 {
+            return Err(StreamError::AllowanceLocked);
         }
 
         // Calculate rate: use a nominal rate of 1 per second

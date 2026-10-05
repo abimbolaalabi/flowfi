@@ -26,13 +26,13 @@ export function projectCashflow(streams: ProjectionStream[], horizonDays: number
       const amount = stream.ratePerSecond * 86400;
       return total + (stream.direction === "incoming" ? amount : -amount);
     }, 0);
-    // The first point represents "now" and accrues nothing; later points each
-    // advance the projection by one full day.
-    if (index > 0) {
-      cumulative += Math.max(0, day);
-      balance = Math.max(0, balance + Math.min(0, day));
-    }
-    return { date, actual: index === 0 ? cumulative : 0, projected: cumulative, balance, dailyRate: day };
+    // `projected` is the balance at the start of the interval, before this
+    // day's accrual — index 0 is "now", so the first projected point already
+    // reflects what has accrued and index 1 adds exactly one day.
+    const projected = cumulative;
+    cumulative += Math.max(0, day);
+    balance = Math.max(0, balance + Math.min(0, day));
+    return { date, actual: index === 0 ? cumulative : 0, projected, balance, dailyRate: day };
   });
 }
 

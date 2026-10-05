@@ -11,7 +11,8 @@ import { WebhookTable } from "@/components/webhooks/WebhookTable";
 export default function WebhooksPage() {
   const { session } = useWallet(); const [subscriptions, setSubscriptions] = useState<WebhookSubscription[]>([]); const [editing, setEditing] = useState<WebhookSubscription | null>(null); const [delivery, setDelivery] = useState<WebhookSubscription | null>(null); const [creating, setCreating] = useState(false); const [secretKey, setSecretKey] = useState<string | undefined>();
   const refresh = async () => { if (!session?.publicKey) return; try { setSubscriptions(await listWebhooks(session.publicKey)); } catch (error) { toast.error(error instanceof Error ? error.message : "Failed to load webhooks"); } };
-  // Refetch when the connected wallet changes; setState only happens after await.
+  // Refetch when the connected session changes; setState only runs after the
+  // async list resolves, so this is not a synchronous cascading update.
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void refresh(); }, [session?.publicKey]);
   const save = async (data: { targetUrl: string; eventTypes: string[] }) => { if (!session?.publicKey) return; if (editing) await updateWebhook(editing.id, session.publicKey, data); else { const result = await createWebhook({ userAddress: session.publicKey, ...data }); setSecretKey(result.secretKey); setEditing(result.subscription); } await refresh(); };

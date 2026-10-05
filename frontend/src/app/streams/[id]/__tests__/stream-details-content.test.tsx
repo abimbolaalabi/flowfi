@@ -22,7 +22,7 @@ vi.mock("next/navigation", () => ({
   useRouter: () => ({ push: vi.fn() }),
 }));
 
-const { mockToast, mockSoroban, mockTracker, mockUseStreamingAmount } = vi.hoisted(() => {
+const { mockToast, mockSoroban, mockTracker, mockUseStreamingAmount, mockTransactionSuccessToast } = vi.hoisted(() => {
   const mockToast = { success: vi.fn(), error: vi.fn() };
   const mockSoroban = {
     withdrawFromStream: vi.fn(),
@@ -44,11 +44,16 @@ const { mockToast, mockSoroban, mockTracker, mockUseStreamingAmount } = vi.hoist
     fail: vi.fn(),
   };
   const mockUseStreamingAmount = vi.fn(() => 123456789);
-  return { mockToast, mockSoroban, mockTracker, mockUseStreamingAmount };
+  const mockTransactionSuccessToast = vi.fn();
+  return { mockToast, mockSoroban, mockTracker, mockUseStreamingAmount, mockTransactionSuccessToast };
 });
 
 vi.mock("react-hot-toast", () => ({
   default: mockToast,
+}));
+
+vi.mock("@/lib/transaction-feedback", () => ({
+  transactionSuccessToast: (...args: unknown[]) => mockTransactionSuccessToast(...args),
 }));
 
 vi.mock("@/lib/api/_shared", () => ({
@@ -63,27 +68,17 @@ vi.mock("@/hooks/useStreamEvents", () => ({
   useStreamEvents: () => ({ events: [] }),
 }));
 
+vi.mock("@/hooks/useTokenPrice", () => ({
+  useTokenPrice: () => ({ data: null, isLoading: false }),
+  convertToFiat: () => 0,
+  formatFiatAmount: (v: number) => `$${v.toFixed(2)}`,
+}));
+
 // The shared ticking hook is exercised by its own suite
 // (frontend/src/__tests__/useStreamingAmount.test.tsx); here we only verify
 // that the details page wires it into the "Claimable" stat card.
 vi.mock("@/hooks/useStreamingAmount", () => ({
   useStreamingAmount: mockUseStreamingAmount,
-}));
-
-// Token pricing performs its own network fetch; stub the hook so the test's
-// `fetch` mock queue only serves the stream + events requests.
-vi.mock("@/hooks/useTokenPrice", () => ({
-  useTokenPrice: () => ({
-    data: {
-      tokenSymbol: "XLM",
-      priceUSD: 0.12,
-      priceEUR: 0.11,
-      priceGBP: 0.09,
-      timestamp: 0,
-    },
-  }),
-  convertToFiat: () => 0,
-  formatFiatAmount: (value: number) => `$${value.toFixed(2)}`,
 }));
 
 vi.mock("@/lib/soroban", () => mockSoroban);
@@ -114,21 +109,8 @@ vi.mock("@/components/TransactionTracker", () => ({
 }));
 
 import StreamDetailsContent from "../stream-details-content";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 const STREAM_ID = "42";
-
-// StreamDetailsContent reads token prices through react-query, so every render
-// needs a client in scope.
-const queryClient = new QueryClient({
-  defaultOptions: { queries: { retry: false } },
-});
-
-function renderWithProviders(ui: React.ReactElement) {
-  return render(
-    <QueryClientProvider client={queryClient}>{ui}</QueryClientProvider>
-  );
-}
 
 function createMockStream() {
   return {
@@ -153,9 +135,7 @@ function createMockStream() {
 describe("StreamDetailsContent loading skeleton", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    global.fetch = vi.fn(() =>
-      Promise.resolve({ ok: false, json: async () => ({}) } as Response)
-    );
+    global.fetch = vi.fn();
     origUseWallet.mockReturnValue({
       session: mockSession,
       isHydrated: true,
@@ -168,7 +148,7 @@ describe("StreamDetailsContent loading skeleton", () => {
       () => new Promise(() => {}) // never resolves
     );
 
-    renderWithProviders(<StreamDetailsContent streamId={STREAM_ID} />);
+    render(<StreamDetailsContent streamId={STREAM_ID} />);
 
     // Should show skeleton elements, not a simple spinner
     const skeletonRegion = screen.getByRole("status");
@@ -191,9 +171,13 @@ describe("StreamDetailsContent loading skeleton", () => {
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({ events: [], total: 0 }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ events: [], total: 0 }),
       } as Response);
 
-    renderWithProviders(<StreamDetailsContent streamId={STREAM_ID} />);
+    render(<StreamDetailsContent streamId={STREAM_ID} />);
 
     // Initially shows skeleton
     expect(screen.getByRole("status")).toBeInTheDocument();
@@ -207,7 +191,7 @@ describe("StreamDetailsContent loading skeleton", () => {
     expect(screen.queryByRole("status")).not.toBeInTheDocument();
 
     // Stream-specific content should be visible
-    expect(screen.getAllByText(/stream #42/i).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/stream #42/i).length).toBeGreaterThanOrEqual(1);
   });
 
   it("transitions from skeleton to not-found state when stream is confirmed missing", async () => {
@@ -217,7 +201,7 @@ describe("StreamDetailsContent loading skeleton", () => {
       json: async () => ({ error: "Stream not found" }),
     } as Response);
 
-    renderWithProviders(<StreamDetailsContent streamId={STREAM_ID} />);
+    render(<StreamDetailsContent streamId={STREAM_ID} />);
 
     // Initially shows skeleton
     expect(screen.getByRole("status")).toBeInTheDocument();
@@ -241,7 +225,7 @@ describe("StreamDetailsContent loading skeleton", () => {
       json: async () => ({ error: "Stream not found" }),
     } as Response);
 
-    renderWithProviders(<StreamDetailsContent streamId={STREAM_ID} />);
+    render(<StreamDetailsContent streamId={STREAM_ID} />);
 
     await waitFor(() => {
       expect(screen.getByText(/stream not found/i)).toBeInTheDocument();
@@ -262,9 +246,13 @@ describe("StreamDetailsContent loading skeleton", () => {
       .mockResolvedValueOnce({
         ok: true,
         json: async () => ({ events: [], total: 0 }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ events: [], total: 0 }),
       } as Response);
 
-    renderWithProviders(<StreamDetailsContent streamId={STREAM_ID} />);
+    render(<StreamDetailsContent streamId={STREAM_ID} />);
 
     // Once the stream loads, the Claimable stat card should show the value
     // returned by the shared hook, formatted in token units (stroops → XLM).
@@ -289,10 +277,14 @@ async function renderLoaded(streamOverrides: Record<string, unknown> = {}) {
     .mockResolvedValueOnce({
       ok: true,
       json: async () => ({ events: [], total: 0 }),
+    } as Response)
+    .mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({ events: [], total: 0 }),
     } as Response);
 
   const user = userEvent.setup();
-  renderWithProviders(<StreamDetailsContent streamId={STREAM_ID} />);
+  render(<StreamDetailsContent streamId={STREAM_ID} />);
 
   await waitFor(() => {
     expect(screen.getByText(/stream details/i)).toBeInTheDocument();
@@ -324,9 +316,7 @@ describe("StreamDetailsContent handleWithdraw", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockTracker.status = "idle";
-    global.fetch = vi.fn(() =>
-      Promise.resolve({ ok: false, json: async () => ({}) } as Response)
-    );
+    global.fetch = vi.fn();
     mockWalletForRecipient();
   });
 
@@ -340,7 +330,7 @@ describe("StreamDetailsContent handleWithdraw", () => {
     await waitFor(() => {
       expect(mockSoroban.withdrawFromStream).toHaveBeenCalled();
     });
-    expect(mockToast.success).toHaveBeenCalledWith("Withdrawal successful!");
+    expect(mockTransactionSuccessToast).toHaveBeenCalledWith("Withdrawal successful!");
   });
 
   it("shows error toast when withdrawFromStream throws", async () => {
@@ -375,9 +365,7 @@ describe("StreamDetailsContent handleTopUp", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockTracker.status = "idle";
-    global.fetch = vi.fn(() =>
-      Promise.resolve({ ok: false, json: async () => ({}) } as Response)
-    );
+    global.fetch = vi.fn();
     // TopUp is only visible for the sender
     origUseWallet.mockReturnValue({
       session: mockSession,
@@ -404,7 +392,7 @@ describe("StreamDetailsContent handleTopUp", () => {
     await waitFor(() => {
       expect(mockSoroban.topUpStream).toHaveBeenCalled();
     });
-    expect(mockToast.success).toHaveBeenCalledWith("Stream topped up successfully!");
+    expect(mockTransactionSuccessToast).toHaveBeenCalledWith("Stream topped up successfully!");
   });
 
   it("shows error toast when topUpStream throws", async () => {
@@ -442,13 +430,13 @@ describe("StreamDetailsContent handleTopUp", () => {
 
 // ─── handlePause ──────────────────────────────────────────────────────────
 
+// ─── handlePause ──────────────────────────────────────────────────────────
+
 describe("StreamDetailsContent handlePause", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockTracker.status = "idle";
-    global.fetch = vi.fn(() =>
-      Promise.resolve({ ok: false, json: async () => ({}) } as Response)
-    );
+    global.fetch = vi.fn();
     origUseWallet.mockReturnValue({
       session: mockSession,
       isHydrated: true,
@@ -468,7 +456,7 @@ describe("StreamDetailsContent handlePause", () => {
         { streamId: BigInt(STREAM_ID) },
       );
     });
-    expect(mockToast.success).toHaveBeenCalledWith("Stream paused");
+    expect(mockTransactionSuccessToast).toHaveBeenCalledWith("Stream paused");
   });
 
   it("shows error toast when pauseStream throws", async () => {
@@ -490,9 +478,7 @@ describe("StreamDetailsContent handleResume", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockTracker.status = "idle";
-    global.fetch = vi.fn(() =>
-      Promise.resolve({ ok: false, json: async () => ({}) } as Response)
-    );
+    global.fetch = vi.fn();
     origUseWallet.mockReturnValue({
       session: mockSession,
       isHydrated: true,
@@ -512,7 +498,7 @@ describe("StreamDetailsContent handleResume", () => {
         { streamId: BigInt(STREAM_ID) },
       );
     });
-    expect(mockToast.success).toHaveBeenCalledWith("Stream resumed");
+    expect(mockTransactionSuccessToast).toHaveBeenCalledWith("Stream resumed");
   });
 
   it("shows error toast when resumeStream throws", async () => {
@@ -534,9 +520,7 @@ describe("StreamDetailsContent handleCancel", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockTracker.status = "idle";
-    global.fetch = vi.fn(() =>
-      Promise.resolve({ ok: false, json: async () => ({}) } as Response)
-    );
+    global.fetch = vi.fn();
     origUseWallet.mockReturnValue({
       session: mockSession,
       isHydrated: true,
@@ -583,9 +567,7 @@ describe("StreamDetailsContent live-claimable interval", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockTracker.status = "idle";
-    global.fetch = vi.fn(() =>
-      Promise.resolve({ ok: false, json: async () => ({}) } as Response)
-    );
+    global.fetch = vi.fn();
   });
 
   it("shows live claimable indicator with a pulsing dot", async () => {

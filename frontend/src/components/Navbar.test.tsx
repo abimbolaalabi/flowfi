@@ -6,6 +6,10 @@ vi.mock('@/context/wallet-context', () => ({
   useWallet: () => ({ session: null, status: 'disconnected' }),
 }));
 
+vi.mock('@/context/NetworkContext', () => ({
+  useNetwork: () => ({ networkId: 'testnet', setNetworkId: vi.fn() }),
+}));
+
 vi.mock('./ModeToggle', () => ({
   ModeToggle: () => <div data-testid="mode-toggle" />,
 }));
@@ -25,7 +29,6 @@ vi.mock('next/link', () => ({
 }));
 
 import { Navbar } from './Navbar';
-import { NetworkProvider } from '@/context/NetworkContext';
 
 describe('Navbar mobile menu toggle', () => {
   beforeEach(() => {
@@ -33,11 +36,7 @@ describe('Navbar mobile menu toggle', () => {
   });
 
   it('opens the mobile menu when the hamburger button is clicked', () => {
-    render(
-      <NetworkProvider>
-        <Navbar />
-      </NetworkProvider>
-    );
+    render(<Navbar />);
 
     expect(screen.queryByTestId('mobile-menu')).not.toBeInTheDocument();
 
@@ -47,11 +46,7 @@ describe('Navbar mobile menu toggle', () => {
   });
 
   it('closes the mobile menu when the hamburger button is clicked again', () => {
-    render(
-      <NetworkProvider>
-        <Navbar />
-      </NetworkProvider>
-    );
+    render(<Navbar />);
 
     fireEvent.click(screen.getByRole('button', { name: /open menu/i }));
     expect(screen.getByTestId('mobile-menu')).toBeInTheDocument();
